@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.ipynb_checkpoints/
+docs/
+csv/*.csv
+csv/*.gz
+logs/*.txt
+output/sqlite/*
+!output/sqlite/.gitkeep
+output/excel/*
+!output/excel/.gitkeep
+*.sqlite
+*.db
+*.xlsx

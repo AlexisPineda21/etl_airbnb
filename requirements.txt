@@ -1,0 +1,8 @@
+pandas
+pymongo
+python-dotenv
+jupyter
+matplotlib
+seaborn
+openpyxl
+
