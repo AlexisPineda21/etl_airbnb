@@ -1,4 +1,9 @@
-"""Funciones auxiliares para la conexion a MongoDB."""
+"""
+Conexion a MongoDB: cliente, base de datos y comprobacion de vida.
+
+Se separa de `extraccion.py` para mantener una sola responsabilidad y facilitar
+pruebas o cambios de URI sin tocar la logica de lectura de colecciones.
+"""
 
 from __future__ import annotations
 
@@ -12,18 +17,23 @@ except ImportError:
 
 
 def get_mongo_client(uri: str | None = None) -> MongoClient:
-    """Crea un cliente de MongoDB con la URI indicada."""
+    """Instancia `MongoClient`; la URI por defecto sale de variables de entorno."""
     return MongoClient(uri or MONGO_URI)
 
 
 def get_database(
     client: MongoClient, database_name: str | None = None
 ) -> Database:
-    """Retorna la base de datos configurada."""
+    """Selecciona la base de datos por nombre (config o argumento)."""
     return client[database_name or MONGO_DB]
 
 
 def ping_database(client: MongoClient) -> None:
-    """Valida que la conexion al servidor MongoDB este activa."""
+    """
+    Ejecuta comando `ping` contra el cluster.
+
+    Falla con excepcion si el servidor no responde; `Extraccion.conectar` lo
+    captura y lo deja registrado en el log como ERROR.
+    """
     client.admin.command("ping")
 
