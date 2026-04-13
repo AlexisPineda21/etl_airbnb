@@ -1,63 +1,288 @@
-"""Esqueleto inicial para la etapa de carga."""
+"""
+Carga (capa ETL): persistencia en SQLite y exportacion XLSX.
+
+Responsabilidad
+---------------
+Tomar los DataFrames ya transformados y (1) crear/reemplazar tablas en un archivo
+SQLite bajo `output/sqlite/`, (2) generar archivos Excel en `output/excel/`,
+(3) verificar conteos con `SELECT COUNT(*)` frente a `len(df)`.
+
+Por que se parte Calendar en varios XLSX
+-----------------------------------------
+Excel limita ~1.048.576 filas por hoja; Calendar supera ese volumen. Se exporta en
+`calendar_part001.xlsx`, etc., segun `EXCEL_MAX_ROWS_PER_FILE`.
+
+Por que chunks en to_sql
+------------------------
+`to_sql(..., chunksize=...)` reduce picos de memoria y transacciones mas estables
+en tablas muy grandes.
+
+Logs
+----
+INFO para rutas y conteos; WARNING al trocear Excel o omitir verificacion; ERROR
+si falla SQLite o no coinciden los conteos.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
+import math
+import os
+import re
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 try:
-    from src.config import EXCEL_DIR, SQLITE_DIR, ensure_directories
+    from src.config import EXCEL_DIR, SQLITE_DB_FILENAME, SQLITE_DIR, ensure_directories
     from src.logger_config import get_logger
 except ImportError:
-    from config import EXCEL_DIR, SQLITE_DIR, ensure_directories
+    from config import EXCEL_DIR, SQLITE_DB_FILENAME, SQLITE_DIR, ensure_directories
     from logger_config import get_logger
+
+# Limite practico por archivo .xlsx (por debajo del tope de Excel)
+EXCEL_MAX_ROWS_PER_FILE = int(os.getenv("EXCEL_MAX_ROWS_PER_FILE", "1000000"))
+SQLITE_CHUNKSIZE = int(os.getenv("SQLITE_TO_SQL_CHUNKSIZE", "50000"))
+
+
+def _nombre_tabla_sql(nombre_coleccion: str) -> str:
+    """Nombre de tabla SQLite seguro: solo letras, numeros y guiones bajos."""
+    base = nombre_coleccion.strip().lower()
+    base = re.sub(r"[^a-z0-9_]+", "_", base)
+    base = re.sub(r"_+", "_", base).strip("_")
+    if not base or not base[0].isalpha():
+        base = "t_" + base if base else "tabla"
+    return base
 
 
 class Carga:
-    """Base reutilizable para guardar DataFrames en SQLite y Excel."""
+    """
+    Orquesta escritura SQLite, export Excel y comprobacion de filas.
 
-    def __init__(self, sqlite_name: str = "airbnb.sqlite") -> None:
+    Usa `get_logger` para cumplir el requisito de logs en la fase de carga del taller.
+    """
+
+    def __init__(
+        self,
+        sqlite_path: Path | str | None = None,
+        directorio_excel: Path | None = None,
+    ) -> None:
         ensure_directories()
         self.logger = get_logger(self.__class__.__name__)
-        self.sqlite_path = SQLITE_DIR / sqlite_name
+        if sqlite_path is None:
+            self.sqlite_path = SQLITE_DIR / SQLITE_DB_FILENAME
+        else:
+            self.sqlite_path = Path(sqlite_path)
+        self.directorio_excel = directorio_excel if directorio_excel is not None else EXCEL_DIR
+        self.directorio_excel.mkdir(parents=True, exist_ok=True)
 
     def cargar_sqlite(self, dataframes: dict[str, pd.DataFrame]) -> Path:
-        """Guarda cada DataFrame en una tabla SQLite con el mismo nombre."""
-        with sqlite3.connect(self.sqlite_path) as connection:
-            for table_name, dataframe in dataframes.items():
-                dataframe.to_sql(
-                    table_name.lower(),
-                    connection,
+        """
+        Crea o reemplaza tablas en la base SQLite (una por coleccion).
+
+        Usa insercion por lotes para tablas grandes. Activa WAL para mejor rendimiento.
+        """
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.info("Inicio carga SQLite en %s", self.sqlite_path)
+
+        conn = sqlite3.connect(self.sqlite_path)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+
+            for nombre_original, df in dataframes.items():
+                tabla = _nombre_tabla_sql(nombre_original)
+                filas = len(df)
+                self.logger.info(
+                    "Insertando tabla '%s' (%s registros, columnas=%s)...",
+                    tabla,
+                    filas,
+                    len(df.columns),
+                )
+                df.to_sql(
+                    tabla,
+                    conn,
                     if_exists="replace",
                     index=False,
+                    chunksize=SQLITE_CHUNKSIZE,
                 )
                 self.logger.info(
-                    "Tabla %s cargada en SQLite con %s registros.",
-                    table_name,
-                    len(dataframe),
+                    "SQLite: tabla '%s' escrita (%s filas).",
+                    tabla,
+                    filas,
                 )
+            conn.commit()
+        except Exception as exc:
+            self.logger.exception("Error durante carga SQLite: %s", exc)
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        self.logger.info("Carga SQLite finalizada: %s", self.sqlite_path)
         return self.sqlite_path
 
-    def exportar_excel(
+    def exportar_xlsx(self, dataframes: dict[str, pd.DataFrame]) -> list[Path]:
+        """
+        Exporta cada coleccion a uno o varios archivos XLSX en `directorio_excel`.
+
+        Si una tabla supera EXCEL_MAX_ROWS_PER_FILE, se generan varios archivos
+        `nombre_part001.xlsx`, `nombre_part002.xlsx`, etc.
+        """
+        rutas: list[Path] = []
+        self.logger.info(
+            "Inicio exportacion Excel (max %s filas por archivo).",
+            EXCEL_MAX_ROWS_PER_FILE,
+        )
+
+        for nombre_original, df in dataframes.items():
+            base = _nombre_tabla_sql(nombre_original)
+            n = len(df)
+            if n == 0:
+                path = self.directorio_excel / f"{base}.xlsx"
+                pd.DataFrame().to_excel(path, index=False, engine="openpyxl")
+                rutas.append(path)
+                self.logger.warning("Excel: %s vacio; archivo creado sin filas de datos.", path.name)
+                continue
+
+            if n <= EXCEL_MAX_ROWS_PER_FILE:
+                path = self.directorio_excel / f"{base}.xlsx"
+                df.to_excel(path, index=False, engine="openpyxl")
+                rutas.append(path)
+                self.logger.info("Excel: %s (%s filas).", path.name, n)
+            else:
+                partes = math.ceil(n / EXCEL_MAX_ROWS_PER_FILE)
+                self.logger.warning(
+                    "Excel: '%s' tiene %s filas; se divide en %s archivos (limite hoja Excel).",
+                    base,
+                    n,
+                    partes,
+                )
+                for p in range(partes):
+                    ini = p * EXCEL_MAX_ROWS_PER_FILE
+                    fin = min(ini + EXCEL_MAX_ROWS_PER_FILE, n)
+                    trozo = df.iloc[ini:fin]
+                    path = self.directorio_excel / f"{base}_part{p + 1:03d}.xlsx"
+                    trozo.to_excel(path, index=False, engine="openpyxl")
+                    rutas.append(path)
+                    self.logger.info(
+                        "Excel: %s (filas %s-%s, total trozo=%s).",
+                        path.name,
+                        ini + 1,
+                        fin,
+                        len(trozo),
+                    )
+
+        self.logger.info("Exportacion Excel: %s archivo(s) generado(s).", len(rutas))
+        return rutas
+
+    def verificar_carga_sqlite(self, dataframes: dict[str, pd.DataFrame]) -> bool:
+        """
+        Comprueba que el numero de filas en SQLite coincide con cada DataFrame fuente.
+        """
+        self.logger.info("Verificacion: conteos en SQLite vs DataFrames.")
+        if not self.sqlite_path.exists():
+            self.logger.error("No existe el archivo SQLite: %s", self.sqlite_path)
+            return False
+
+        conn = sqlite3.connect(self.sqlite_path)
+        todo_ok = True
+        try:
+            for nombre_original, df in dataframes.items():
+                tabla = _nombre_tabla_sql(nombre_original)
+                esperado = len(df)
+                try:
+                    cur = conn.execute(f'SELECT COUNT(*) AS c FROM "{tabla}"')
+                    fila = cur.fetchone()
+                    obtenido = int(fila[0]) if fila else 0
+                except sqlite3.Error as exc:
+                    self.logger.error(
+                        "Verificacion: no se pudo leer la tabla '%s': %s",
+                        tabla,
+                        exc,
+                    )
+                    todo_ok = False
+                    continue
+
+                if obtenido == esperado:
+                    self.logger.info(
+                        "OK tabla '%s': %s filas (coincide con DataFrame).",
+                        tabla,
+                        obtenido,
+                    )
+                else:
+                    self.logger.error(
+                        "FALLO tabla '%s': SQLite tiene %s filas, se esperaban %s.",
+                        tabla,
+                        obtenido,
+                        esperado,
+                    )
+                    todo_ok = False
+        finally:
+            conn.close()
+
+        if todo_ok:
+            self.logger.info("Verificacion SQLite: todas las tablas coinciden con los DataFrames.")
+        else:
+            self.logger.error("Verificacion SQLite: hay discrepancias de conteo.")
+
+        return todo_ok
+
+    def ejecutar(
         self,
         dataframes: dict[str, pd.DataFrame],
-        excel_name: str = "airbnb_transformado.xlsx",
-    ) -> Path:
-        """Exporta los DataFrames a un archivo Excel, una hoja por coleccion."""
-        excel_path = EXCEL_DIR / excel_name
-        with pd.ExcelWriter(excel_path) as writer:
-            for sheet_name, dataframe in dataframes.items():
-                dataframe.to_excel(
-                    writer,
-                    sheet_name=sheet_name[:31],
-                    index=False,
-                )
-                self.logger.info(
-                    "Hoja %s exportada a Excel con %s registros.",
-                    sheet_name,
-                    len(dataframe),
-                )
-        return excel_path
+        *,
+        sqlite: bool = True,
+        excel: bool = True,
+        verificar: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Ejecuta carga SQLite, exportacion XLSX y verificacion segun flags.
 
+        Returns
+        -------
+        dict
+            sqlite_path, rutas_excel, verificacion_ok
+        """
+        resultado: dict[str, Any] = {
+            "sqlite_path": None,
+            "rutas_excel": [],
+            "verificacion_ok": None,
+        }
+
+        if sqlite:
+            resultado["sqlite_path"] = self.cargar_sqlite(dataframes)
+
+        if excel:
+            resultado["rutas_excel"] = self.exportar_xlsx(dataframes)
+
+        if verificar and sqlite:
+            resultado["verificacion_ok"] = self.verificar_carga_sqlite(dataframes)
+        elif verificar and not sqlite:
+            self.logger.warning("Verificacion omitida: no se cargo SQLite en esta ejecucion.")
+            resultado["verificacion_ok"] = None
+
+        return resultado
+
+
+if __name__ == "__main__":
+    try:
+        from src.extraccion import Extraccion
+        from src.transformacion import Transformacion
+    except ImportError:
+        from extraccion import Extraccion
+        from transformacion import Transformacion
+
+    ext = Extraccion()
+    try:
+        ext.conectar()
+        datos = ext.extraer_todo()
+        limpios = Transformacion().transformar(datos)
+        carga = Carga()
+        salida = carga.ejecutar(limpios)
+        print("SQLite:", salida["sqlite_path"])
+        print("Excel:  ", len(salida["rutas_excel"]), "archivo(s)")
+        print("Verificacion OK:", salida["verificacion_ok"])
+    finally:
+        ext.cerrar_conexion()
