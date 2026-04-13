@@ -364,11 +364,37 @@ def analizar_duplicados(df: pd.DataFrame, nombre_coleccion: str, col_id: str = "
     print(f"      - Registros únicos: {unicos:,}")
     print(f"      - Duplicados por ID: {duplicados_id:,} ({pct_duplicados_id:.2f}%)")
 
-    filas_duplicadas = df.duplicated().sum()
+    def _hacer_hashable(valor: Any) -> Any:
+        if isinstance(valor, list):
+            return tuple(_hacer_hashable(v) for v in valor)
+        if isinstance(valor, dict):
+            return tuple(sorted((k, _hacer_hashable(v)) for k, v in valor.items()))
+        if isinstance(valor, set):
+            return tuple(sorted(_hacer_hashable(v) for v in valor))
+        return valor
+
+    try:
+        filas_duplicadas = df.duplicated().sum()
+        columnas_normalizadas: list[str] = []
+    except TypeError:
+        df_hashable = df.copy()
+        columnas_normalizadas = []
+
+        for col in df_hashable.select_dtypes(include=["object"]).columns:
+            columnas_normalizadas.append(col)
+            df_hashable[col] = df_hashable[col].map(_hacer_hashable)
+
+        filas_duplicadas = df_hashable.duplicated().sum()
     pct_filas_dup = (filas_duplicadas / total * 100) if total > 0 else 0
 
     print("\n   2. FILAS COMPLETAMENTE DUPLICADAS (todas las columnas):")
     print(f"      - Filas duplicadas: {filas_duplicadas:,} ({pct_filas_dup:.2f}%)")
+
+    if columnas_normalizadas:
+        print(
+            "      - Nota: se normalizaron columnas tipo object para comparar "
+            f"filas completas: {columnas_normalizadas}"
+        )
 
     if duplicados_id == 0 and filas_duplicadas == 0:
         print("\n   Excelente: No hay duplicados en esta colección")
