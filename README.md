@@ -63,11 +63,29 @@ pip install -r requirements.txt
 
 Incluye: `pandas`, `pymongo`, `python-dotenv`, `jupyter`, `matplotlib`, `seaborn`, `openpyxl`.
 
-### 3. Configuracion
+### 3. Configuracion basica
 
-1. Copiar `.env.example` a `.env` y ajustar valores.
+1. Copiar `.env.example` a `.env` en la **raiz del proyecto** (mismo nivel que `README.md`).
 2. Tener **MongoDB** en ejecución con la base cargada (colecciones `Listings`, `Reviews`, `Calendar`).
 3. Las carpetas `logs/`, `output/sqlite/`, `output/excel/` se crean solas al ejecutar.
+
+### Variables de entorno segun el PC donde ejecutas
+
+El archivo **`.env` no se sube al repositorio** (cada integrante / cada ordenador tiene el suyo). Debes **revisar y adaptar** estas variables cuando cambies de máquina, de red o de cómo tengas montado MongoDB.
+
+| Variable | Que ajustar | Ejemplo / notas |
+|----------|-------------|-----------------|
+| **`MONGO_URI`** | Direccion y puerto del servidor MongoDB en **tu** PC o red local. Si Mongo escucha en otro host, puerto o usa autenticacion, cambia aqui. | `mongodb://localhost:27017/` — en otra maquina de la LAN: `mongodb://192.168.1.10:27017/` — con usuario: `mongodb://user:pass@localhost:27017/` |
+| **`MONGO_DB`** | Nombre exacto de la **base de datos** donde importaste los CSV (distingue mayusculas segun como la creaste en MongoDB). | Debe coincidir con lo que ves en Compass o `mongosh` (ej. `arbnb_MXN`, `airbnb_ba`). |
+| **`MONGO_LISTINGS_COLLECTION`** | Nombre de la coleccion de listings **en tu base**. | Por defecto `Listings`; si la importaste como `listings` en minusculas, pon eso. |
+| **`MONGO_REVIEWS_COLLECTION`** | Igual para reseñas. | `Reviews` |
+| **`MONGO_CALENDAR_COLLECTION`** | Igual para calendario. | `Calendar` |
+| **`LOG_LEVEL`** | Cuanto detalle quieres en consola y en `logs/`. En equipos lentos o corridas largas, `WARNING` reduce ruido; para depurar usa `DEBUG` si el codigo lo soporta o `INFO`. | `INFO` (recomendado), `WARNING`, `ERROR` |
+| **`SQLITE_DB_FILENAME`** | Solo el **nombre del archivo** `.db` (la carpeta `output/sqlite/` es fija en el codigo). Cambialo si quieres varias bases en el mismo PC sin sobrescribir. | `airbnb_transformado.db` |
+| **`EXCEL_MAX_ROWS_PER_FILE`** | Maximo de filas por archivo **.xlsx** antes de partir en `calendar_part002.xlsx`, etc. En PCs con poca RAM bajar el valor hace exports mas pequeños (y mas archivos). El limite teorico de Excel es ~1.048.576 filas por hoja. | `1000000` para dataset completo; valores bajos solo para pruebas |
+| **`SQLITE_TO_SQL_CHUNKSIZE`** | Filas por lote al insertar en SQLite. PCs con poca RAM: bajar (ej. `20000`); con mucha RAM: subir ligeramente puede acelerar. | `50000` por defecto |
+
+**Resumen:** en un **PC nuevo** lo minimo suele ser comprobar **`MONGO_URI`** y **`MONGO_DB`** (y que los tres nombres de coleccion coincidan con tu Mongo). El resto puede quedarse como en `.env.example` hasta que necesites afinar rendimiento o rutas de salida.
 
 ## Ejecucion del proyecto
 
@@ -113,15 +131,14 @@ El mismo archivo de log agrupa normalmente toda una corrida en la que interviene
 
 | Integrante | Responsabilidades (completar) |
 |------------|-------------------------------|
-| _Nombre 1_ | _Extracción / MongoDB, documentación_ |
-| _Nombre 2_ | _Transformación, validación_ |
-| _Nombre 3_ | _Carga SQLite/Excel, informe, EDA_ |
+| _Felipe Olaya Benitez_ | _EDA, Transformación y Carga_ |
+| _Oscar Alexis Pineda Henao _ | _Extracción, Documentación_ |
 
 _Sustituir la tabla por los datos reales del equipo._
 
 ## Contenido adicional util
 
-- **Variables de entorno:** ver `.env.example` (MongoDB, nombre del `.db`, tamaños de chunk, filas máximas por Excel).
+- **Variables de entorno:** tabla detallada mas arriba (*Variables de entorno segun el PC donde ejecutas*); plantilla en `.env.example`.
 - **Consultar SQLite:** [DB Browser for SQLite](https://sqlitebrowser.org/) o `sqlite3` en terminal; tablas en minúsculas (`listings`, `reviews`, `calendar`).
 - **Rendimiento:** Calendar supera el límite de filas de Excel; la carga genera `calendar_part001.xlsx`, etc.
 - **Calidad:** `validacion.py` comprueba duplicados, nulos críticos y columnas derivadas tras transformar.
