@@ -24,7 +24,7 @@ elif EXAMPLE_ENV_FILE.exists():
     load_dotenv(EXAMPLE_ENV_FILE)
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-MONGO_DB = os.getenv("MONGO_DB", "arbnb_MXN")
+MONGO_DB = os.getenv("MONGO_DB", "airbnb_mx")
 COLLECTIONS = {
     "listings": os.getenv("MONGO_LISTINGS_COLLECTION", "Listings"),
     "reviews": os.getenv("MONGO_REVIEWS_COLLECTION", "Reviews"),

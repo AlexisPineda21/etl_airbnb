@@ -25,6 +25,7 @@ si falla SQLite o no coinciden los conteos.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -54,6 +55,54 @@ def _nombre_tabla_sql(nombre_coleccion: str) -> str:
     if not base or not base[0].isalpha():
         base = "t_" + base if base else "tabla"
     return base
+
+
+def _normalizar_valor_complejo(valor: Any) -> Any:
+    """Convierte estructuras complejas en tipos serializables por JSON."""
+    if isinstance(valor, pd.Timestamp):
+        return valor.isoformat()
+    if isinstance(valor, dict):
+        return {str(k): _normalizar_valor_complejo(v) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple, set)):
+        return [_normalizar_valor_complejo(v) for v in valor]
+    if pd.isna(valor):
+        return None
+    if hasattr(valor, "item") and not isinstance(valor, (str, bytes)):
+        try:
+            return valor.item()
+        except Exception:
+            return valor
+    return valor
+
+
+def _serializar_si_es_complejo(valor: Any) -> Any:
+    """Serializa listas/dicts/sets/tuplas a JSON para SQLite y Excel."""
+    if isinstance(valor, (list, dict, set, tuple)):
+        normalizado = _normalizar_valor_complejo(valor)
+        return json.dumps(normalizado, ensure_ascii=False)
+    return valor
+
+
+def _preparar_dataframe_para_salida(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Devuelve una copia segura para SQLite/Excel.
+
+    Se serializan solo las columnas object que contengan estructuras complejas
+    (listas, diccionarios, sets o tuplas). Esto evita errores de binding en
+    SQLite sin alterar el DataFrame original de transformacion.
+    """
+    preparado = df.copy()
+    columnas_serializadas: list[str] = []
+
+    for col in preparado.select_dtypes(include=["object"]).columns:
+        mascara_complejos = preparado[col].map(
+            lambda v: isinstance(v, (list, dict, set, tuple))
+        )
+        if bool(mascara_complejos.any()):
+            preparado[col] = preparado[col].map(_serializar_si_es_complejo)
+            columnas_serializadas.append(col)
+
+    return preparado, columnas_serializadas
 
 
 class Carga:
@@ -93,6 +142,7 @@ class Carga:
 
             for nombre_original, df in dataframes.items():
                 tabla = _nombre_tabla_sql(nombre_original)
+                df_salida, columnas_serializadas = _preparar_dataframe_para_salida(df)
                 filas = len(df)
                 self.logger.info(
                     "Insertando tabla '%s' (%s registros, columnas=%s)...",
@@ -100,7 +150,13 @@ class Carga:
                     filas,
                     len(df.columns),
                 )
-                df.to_sql(
+                if columnas_serializadas:
+                    self.logger.info(
+                        "SQLite: columnas serializadas en '%s' por contener estructuras complejas: %s",
+                        tabla,
+                        columnas_serializadas,
+                    )
+                df_salida.to_sql(
                     tabla,
                     conn,
                     if_exists="replace",
@@ -138,7 +194,14 @@ class Carga:
 
         for nombre_original, df in dataframes.items():
             base = _nombre_tabla_sql(nombre_original)
+            df_salida, columnas_serializadas = _preparar_dataframe_para_salida(df)
             n = len(df)
+            if columnas_serializadas:
+                self.logger.info(
+                    "Excel: columnas serializadas en '%s' por contener estructuras complejas: %s",
+                    base,
+                    columnas_serializadas,
+                )
             if n == 0:
                 path = self.directorio_excel / f"{base}.xlsx"
                 pd.DataFrame().to_excel(path, index=False, engine="openpyxl")
@@ -148,7 +211,7 @@ class Carga:
 
             if n <= EXCEL_MAX_ROWS_PER_FILE:
                 path = self.directorio_excel / f"{base}.xlsx"
-                df.to_excel(path, index=False, engine="openpyxl")
+                df_salida.to_excel(path, index=False, engine="openpyxl")
                 rutas.append(path)
                 self.logger.info("Excel: %s (%s filas).", path.name, n)
             else:
@@ -162,7 +225,7 @@ class Carga:
                 for p in range(partes):
                     ini = p * EXCEL_MAX_ROWS_PER_FILE
                     fin = min(ini + EXCEL_MAX_ROWS_PER_FILE, n)
-                    trozo = df.iloc[ini:fin]
+                    trozo = df_salida.iloc[ini:fin]
                     path = self.directorio_excel / f"{base}_part{p + 1:03d}.xlsx"
                     trozo.to_excel(path, index=False, engine="openpyxl")
                     rutas.append(path)
