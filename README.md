@@ -82,7 +82,8 @@ El archivo **`.env` no se sube al repositorio** (cada integrante / cada ordenado
 | **`MONGO_CALENDAR_COLLECTION`** | Igual para calendario. | `Calendar` |
 | **`LOG_LEVEL`** | Cuanto detalle quieres en consola y en `logs/`. En equipos lentos o corridas largas, `WARNING` reduce ruido; para depurar usa `DEBUG` si el codigo lo soporta o `INFO`. | `INFO` (recomendado), `WARNING`, `ERROR` |
 | **`SQLITE_DB_FILENAME`** | Solo el **nombre del archivo** `.db` (la carpeta `output/sqlite/` es fija en el codigo). Cambialo si quieres varias bases en el mismo PC sin sobrescribir. | `airbnb_transformado.db` |
-| **`EXCEL_MAX_ROWS_PER_FILE`** | Maximo de filas por archivo **.xlsx** antes de partir en `calendar_part002.xlsx`, etc. En PCs con poca RAM bajar el valor hace exports mas pequeños (y mas archivos). El limite teorico de Excel es ~1.048.576 filas por hoja. | `1000000` para dataset completo; valores bajos solo para pruebas |
+| **`EXCEL_MAX_ROWS_PER_FILE`** | Maximo de filas por cada archivo **.xlsx** (cada trozo al partir una coleccion grande). | `1000000` para volcar casi todo en pocos archivos; `2000` para trozos pequeños |
+| **`EXCEL_MAX_FILES`** | Maximo de archivos **por coleccion** en Excel. **Vacio** = sin limite (se generan todos los `*_partXXX.xlsx` necesarios). Con `1` solo el primer trozo: ideal con pocas filas para **previsualizar** sin llenar el disco. | Preview: `EXCEL_MAX_FILES=1` y `EXCEL_MAX_ROWS_PER_FILE=2000` → un solo `.xlsx` ~2000 filas por tabla (`listings.xlsx`, `reviews.xlsx`, `calendar_part001.xlsx`, etc.) |
 | **`SQLITE_TO_SQL_CHUNKSIZE`** | Filas por lote al insertar en SQLite. PCs con poca RAM: bajar (ej. `20000`); con mucha RAM: subir ligeramente puede acelerar. | `50000` por defecto |
 
 **Resumen:** en un **PC nuevo** lo minimo suele ser comprobar **`MONGO_URI`** y **`MONGO_DB`** (y que los tres nombres de coleccion coincidan con tu Mongo). El resto puede quedarse como en `.env.example` hasta que necesites afinar rendimiento o rutas de salida.
@@ -98,7 +99,7 @@ Desde la **raíz** del repositorio, con el entorno virtual activado:
 | Solo probar extracción (5 filas por colección) | `python -m src.extraccion` |
 | EDA en Jupyter | `jupyter notebook notebooks/exploracion_airbnb.ipynb` |
 
-**Nota:** `python -m src.carga` puede tardar mucho y generar archivos grandes porque procesa **todo** el volumen (especialmente Calendar). Para pruebas, puedes usar límites en `Extraccion.extraer_todo(limit_by_collection={...})` desde un script propio.
+**Nota:** `python -m src.carga` puede tardar mucho y generar archivos grandes (SQLite sigue cargando **todo** el dataset). Para **solo previsualizar Excel**, pon en `.env` por ejemplo `EXCEL_MAX_FILES=1` y `EXCEL_MAX_ROWS_PER_FILE=2000`. Para acortar tambien la extraccion, usa `Extraccion.extraer_todo(limit_by_collection={...})` en un script propio.
 
 ### Ejemplo de ejecucion del proceso ETL (script corto)
 

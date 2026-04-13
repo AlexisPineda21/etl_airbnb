@@ -10,7 +10,9 @@ SQLite bajo `output/sqlite/`, (2) generar archivos Excel en `output/excel/`,
 Por que se parte Calendar en varios XLSX
 -----------------------------------------
 Excel limita ~1.048.576 filas por hoja; Calendar supera ese volumen. Se exporta en
-`calendar_part001.xlsx`, etc., segun `EXCEL_MAX_ROWS_PER_FILE`.
+`calendar_part001.xlsx`, etc., segun `EXCEL_MAX_ROWS_PER_FILE`. Con `EXCEL_MAX_FILES`
+se puede limitar cuantos archivos se generan **por coleccion** (ej. `1` + 2000 filas =
+solo una previsualizacion de 2000 filas por tabla).
 
 Por que chunks en to_sql
 ------------------------
@@ -43,6 +45,15 @@ except ImportError:
 
 # Limite practico por archivo .xlsx (por debajo del tope de Excel)
 EXCEL_MAX_ROWS_PER_FILE = int(os.getenv("EXCEL_MAX_ROWS_PER_FILE", "1000000"))
+# Max archivos XLSX por coleccion; vacio o no definido = exportar todos los trozos necesarios
+EXCEL_MAX_FILES_RAW = os.getenv("EXCEL_MAX_FILES", "").strip()
+EXCEL_MAX_FILES: int | None
+if not EXCEL_MAX_FILES_RAW:
+    EXCEL_MAX_FILES = None
+else:
+    _mf = int(EXCEL_MAX_FILES_RAW)
+    EXCEL_MAX_FILES = _mf if _mf > 0 else None
+
 SQLITE_CHUNKSIZE = int(os.getenv("SQLITE_TO_SQL_CHUNKSIZE", "50000"))
 
 
@@ -128,12 +139,14 @@ class Carga:
         Exporta cada coleccion a uno o varios archivos XLSX en `directorio_excel`.
 
         Si una tabla supera EXCEL_MAX_ROWS_PER_FILE, se generan varios archivos
-        `nombre_part001.xlsx`, `nombre_part002.xlsx`, etc.
+        `nombre_part001.xlsx`, etc., salvo que `EXCEL_MAX_FILES` limite cuantos
+        trozos se escriben (util para previsualizar sin llenar el disco).
         """
         rutas: list[Path] = []
         self.logger.info(
-            "Inicio exportacion Excel (max %s filas por archivo).",
+            "Inicio exportacion Excel (max %s filas por archivo; max archivos por coleccion=%s).",
             EXCEL_MAX_ROWS_PER_FILE,
+            EXCEL_MAX_FILES if EXCEL_MAX_FILES is not None else "sin limite",
         )
 
         for nombre_original, df in dataframes.items():
@@ -152,13 +165,32 @@ class Carga:
                 rutas.append(path)
                 self.logger.info("Excel: %s (%s filas).", path.name, n)
             else:
-                partes = math.ceil(n / EXCEL_MAX_ROWS_PER_FILE)
-                self.logger.warning(
-                    "Excel: '%s' tiene %s filas; se divide en %s archivos (limite hoja Excel).",
-                    base,
-                    n,
-                    partes,
+                partes_totales = math.ceil(n / EXCEL_MAX_ROWS_PER_FILE)
+                partes = (
+                    min(partes_totales, EXCEL_MAX_FILES)
+                    if EXCEL_MAX_FILES is not None
+                    else partes_totales
                 )
+                if partes < partes_totales:
+                    filas_exportadas = min(n, partes * EXCEL_MAX_ROWS_PER_FILE)
+                    self.logger.warning(
+                        "Excel: '%s' tiene %s filas (%s archivos posibles); "
+                        "por EXCEL_MAX_FILES=%s solo se exportan %s archivo(s) (~%s filas; %s omitidas).",
+                        base,
+                        n,
+                        partes_totales,
+                        EXCEL_MAX_FILES,
+                        partes,
+                        filas_exportadas,
+                        n - filas_exportadas,
+                    )
+                else:
+                    self.logger.warning(
+                        "Excel: '%s' tiene %s filas; se divide en %s archivos (limite hoja Excel).",
+                        base,
+                        n,
+                        partes,
+                    )
                 for p in range(partes):
                     ini = p * EXCEL_MAX_ROWS_PER_FILE
                     fin = min(ini + EXCEL_MAX_ROWS_PER_FILE, n)
