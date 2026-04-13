@@ -132,7 +132,7 @@ El mismo archivo de log agrupa normalmente toda una corrida en la que interviene
 | Integrante | Responsabilidades (completar) |
 |------------|-------------------------------|
 | _Felipe Olaya Benitez_ | _EDA, Transformación y Carga_ |
-| _Oscar Alexis Pineda Henao _ | _Extracción, Documentación_ |
+| _Oscar Alexis Pineda Henao_ | _Extracción, Documentación_ |
 
 _Sustituir la tabla por los datos reales del equipo._
 
