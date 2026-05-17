@@ -31,6 +31,7 @@ COLLECTIONS = {
     "calendar": os.getenv("MONGO_CALENDAR_COLLECTION", "Calendar"),
 }
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+EXTRACTION_WINDOW_MONTHS = int(os.getenv("EXTRACTION_WINDOW_MONTHS", "0"))
 
 LOG_DIR = BASE_DIR / "logs"
 OUTPUT_DIR = BASE_DIR / "output"

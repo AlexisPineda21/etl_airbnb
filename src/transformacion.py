@@ -261,6 +261,13 @@ class Transformacion:
         merged = df.merge(agg, how="left", left_on="id", right_on="listing_id")
         merged = merged.drop(columns=["listing_id"], errors="ignore")
 
+        if "first_review_x" in merged.columns or "first_review_y" in merged.columns:
+            base_first_review = merged["first_review_x"] if "first_review_x" in merged.columns else pd.Series(pd.NaT, index=merged.index)
+            agg_first_review = merged["first_review_y"] if "first_review_y" in merged.columns else pd.Series(pd.NaT, index=merged.index)
+            merged["first_review"] = base_first_review.combine_first(agg_first_review)
+            merged["first_review"] = _fecha_a_estandar(merged["first_review"])
+            merged = merged.drop(columns=["first_review_x", "first_review_y"], errors="ignore")
+
         if "lr_from_reviews" in merged.columns:
             if "last_review" in merged.columns:
                 merged["last_review"] = merged["last_review"].combine_first(merged["lr_from_reviews"])
@@ -278,7 +285,7 @@ class Transformacion:
                 merged["reviews_per_month"] = merged["rpm_from_reviews"]
             merged = merged.drop(columns=["rpm_from_reviews"], errors="ignore")
 
-        merged = merged.drop(columns=["first_review", "review_count_agg"], errors="ignore")
+        merged = merged.drop(columns=["review_count_agg"], errors="ignore")
         return merged
 
     def _transformar_listings(self, df: pd.DataFrame, reviews: pd.DataFrame | None) -> pd.DataFrame:

@@ -27,6 +27,7 @@ si falla SQLite o no coinciden los conteos.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -38,10 +39,22 @@ from typing import Any
 import pandas as pd
 
 try:
-    from src.config import EXCEL_DIR, SQLITE_DB_FILENAME, SQLITE_DIR, ensure_directories
+    from src.config import (
+        EXCEL_DIR,
+        EXTRACTION_WINDOW_MONTHS,
+        SQLITE_DB_FILENAME,
+        SQLITE_DIR,
+        ensure_directories,
+    )
     from src.logger_config import get_logger
 except ImportError:
-    from config import EXCEL_DIR, SQLITE_DB_FILENAME, SQLITE_DIR, ensure_directories
+    from config import (
+        EXCEL_DIR,
+        EXTRACTION_WINDOW_MONTHS,
+        SQLITE_DB_FILENAME,
+        SQLITE_DIR,
+        ensure_directories,
+    )
     from logger_config import get_logger
 
 # Limite practico por archivo .xlsx (por debajo del tope de Excel)
@@ -362,6 +375,32 @@ class Carga:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Ejecuta la carga ETL a SQLite y/o Excel sobre datos Airbnb."
+    )
+    parser.add_argument(
+        "--months-back",
+        type=int,
+        default=EXTRACTION_WINDOW_MONTHS,
+        help="Ventana temporal en meses por coleccion, basada en la fecha maxima disponible.",
+    )
+    parser.add_argument(
+        "--no-excel",
+        action="store_true",
+        help="Omite la exportacion a Excel.",
+    )
+    parser.add_argument(
+        "--no-sqlite",
+        action="store_true",
+        help="Omite la carga a SQLite.",
+    )
+    parser.add_argument(
+        "--no-verificar",
+        action="store_true",
+        help="Omite la verificacion final de conteos en SQLite.",
+    )
+    args = parser.parse_args()
+
     try:
         from src.extraccion import Extraccion
         from src.transformacion import Transformacion
@@ -369,13 +408,18 @@ if __name__ == "__main__":
         from extraccion import Extraccion
         from transformacion import Transformacion
 
-    ext = Extraccion()
+    ext = Extraccion(months_back=args.months_back)
     try:
         ext.conectar()
         datos = ext.extraer_todo()
         limpios = Transformacion().transformar(datos)
         carga = Carga()
-        salida = carga.ejecutar(limpios)
+        salida = carga.ejecutar(
+            limpios,
+            sqlite=not args.no_sqlite,
+            excel=not args.no_excel,
+            verificar=not args.no_verificar,
+        )
         print("SQLite:", salida["sqlite_path"])
         print("Excel:  ", len(salida["rutas_excel"]), "archivo(s)")
         print("Verificacion OK:", salida["verificacion_ok"])

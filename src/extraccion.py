@@ -22,18 +22,26 @@ Errores de conexion se registran con nivel ERROR antes de relanzar la excepcion.
 
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
 import pandas as pd
 
 try:
-    from src.config import COLLECTIONS, MONGO_DB, MONGO_URI
+    from src.config import COLLECTIONS, EXTRACTION_WINDOW_MONTHS, MONGO_DB, MONGO_URI
     from src.logger_config import get_logger
     from src.mongo_connection import get_database, get_mongo_client, ping_database
 except ImportError:
-    from config import COLLECTIONS, MONGO_DB, MONGO_URI
+    from config import COLLECTIONS, EXTRACTION_WINDOW_MONTHS, MONGO_DB, MONGO_URI
     from logger_config import get_logger
     from mongo_connection import get_database, get_mongo_client, ping_database
+
+
+DATE_FIELD_BY_COLLECTION_KEY = {
+    "listings": "last_scraped",
+    "reviews": "date",
+    "calendar": "date",
+}
 
 
 class Extraccion:
@@ -44,11 +52,13 @@ class Extraccion:
         mongo_uri: str = MONGO_URI,
         database_name: str = MONGO_DB,
         collections: dict[str, str] | None = None,
+        months_back: int = EXTRACTION_WINDOW_MONTHS,
     ) -> None:
         self.mongo_uri = mongo_uri
         self.database_name = database_name
         # Clave interna (ej. 'listings') -> nombre real de la coleccion en Mongo
         self.collections = collections or COLLECTIONS
+        self.months_back = max(int(months_back), 0)
         self.logger = get_logger(self.__class__.__name__)
         self.client = None
         self.database = None
@@ -117,8 +127,83 @@ class Extraccion:
         )
         return dataframe
 
+    def _resolver_campo_fecha(self, collection_name: str) -> str | None:
+        """Devuelve el campo fecha asociado a la coleccion configurada."""
+        for collection_key, real_collection_name in self.collections.items():
+            if real_collection_name.lower() == collection_name.lower():
+                return DATE_FIELD_BY_COLLECTION_KEY.get(collection_key.lower())
+        return None
+
+    def _agregar_filtro_temporal(
+        self,
+        collection_name: str,
+        query: dict[str, Any] | None = None,
+        *,
+        months_back: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Agrega filtro de ventana temporal basado en la fecha maxima de la coleccion.
+
+        Se usa una referencia por coleccion para evitar ventanas vacias cuando el
+        dataset historico no llega hasta la fecha actual del equipo.
+        """
+        base_query = dict(query or {})
+        months = self.months_back if months_back is None else max(int(months_back), 0)
+        if months <= 0:
+            return base_query
+
+        if self.database is None:
+            self.conectar()
+
+        date_field = self._resolver_campo_fecha(collection_name)
+        if not date_field:
+            self.logger.warning(
+                "No se encontro campo fecha configurado para '%s'; se omite ventana temporal.",
+                collection_name,
+            )
+            return base_query
+
+        collection = self.database[collection_name]
+        reference_doc = collection.find_one(
+            {date_field: {"$ne": None}},
+            projection={date_field: 1, "_id": 0},
+            sort=[(date_field, -1)],
+        )
+        if not reference_doc or reference_doc.get(date_field) is None:
+            self.logger.warning(
+                "No hay valores en '%s.%s' para construir ventana temporal; se extrae sin filtro.",
+                collection_name,
+                date_field,
+            )
+            return base_query
+
+        reference_date = pd.Timestamp(reference_doc[date_field]).to_pydatetime()
+        cutoff_date = (pd.Timestamp(reference_date) - pd.DateOffset(months=months)).to_pydatetime()
+        date_filter = {date_field: {"$gte": cutoff_date, "$lte": reference_date}}
+
+        if not base_query:
+            final_query = date_filter
+        elif date_field in base_query:
+            final_query = {**base_query, date_field: {**date_filter[date_field], **base_query[date_field]}}
+        else:
+            final_query = {"$and": [base_query, date_filter]}
+
+        self.logger.info(
+            "Ventana temporal aplicada en '%s' usando '%s': desde %s hasta %s (%s meses).",
+            collection_name,
+            date_field,
+            cutoff_date.date(),
+            reference_date.date(),
+            months,
+        )
+        return final_query
+
     def extraer_todo(
-        self, limit_by_collection: dict[str, int] | None = None
+        self,
+        limit_by_collection: dict[str, int] | None = None,
+        query_by_collection: dict[str, dict[str, Any]] | None = None,
+        *,
+        months_back: int | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Extrae todas las colecciones definidas en `COLLECTIONS`.
@@ -128,9 +213,15 @@ class Extraccion:
         """
         dataframes: dict[str, pd.DataFrame] = {}
         limit_by_collection = limit_by_collection or {}
+        query_by_collection = query_by_collection or {}
 
         for _, collection_name in self.collections.items():
             lim = limit_by_collection.get(collection_name)
+            query = self._agregar_filtro_temporal(
+                collection_name,
+                query=query_by_collection.get(collection_name),
+                months_back=months_back,
+            )
             if lim is not None:
                 self.logger.warning(
                     "Extraccion con limite de %s filas en '%s' (solo para pruebas).",
@@ -139,6 +230,7 @@ class Extraccion:
                 )
             dataframes[collection_name] = self.extraer_coleccion(
                 collection_name=collection_name,
+                query=query,
                 limit=lim,
             )
 
@@ -152,7 +244,16 @@ class Extraccion:
 
 
 if __name__ == "__main__":
-    extractor = Extraccion()
+    parser = argparse.ArgumentParser(description="Extrae colecciones Airbnb desde MongoDB.")
+    parser.add_argument(
+        "--months-back",
+        type=int,
+        default=EXTRACTION_WINDOW_MONTHS,
+        help="Ventana temporal en meses por coleccion, basada en la fecha maxima disponible.",
+    )
+    args = parser.parse_args()
+
+    extractor = Extraccion(months_back=args.months_back)
 
     try:
         muestras = extractor.extraer_todo(
